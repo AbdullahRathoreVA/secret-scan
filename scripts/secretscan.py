@@ -3,7 +3,7 @@
 repository, including ones deleted later, and say which are still in the
 working tree. Local only: no network code, and it never runs git.
 
-  git log -p --all > history.patch                (you run this, outside the repo)
+  git log -p --all --output=history.patch         (you run this; keep the file outside the repo)
   python secretscan.py history.patch --tree .     history and working tree
   python secretscan.py history.patch              history only
   python secretscan.py --tree .                   working tree only
@@ -25,12 +25,17 @@ PATTERNS = [(name, re.compile(rx)) for name, rx in (
     ("Slack token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
     ("Google API key", r"\bAIza[0-9A-Za-z_\-]{35}\b"),
     ("AI provider key", r"\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}|gsk_[A-Za-z0-9]{20,})\b"),
-    ("Private key block", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+    ("Private key block", r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|ENCRYPTED) )?PRIVATE KEY-----"
+                           r"|-----BEGIN PGP PRIVATE[ ]KEY BLOCK-----"),
     ("JSON web token", r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"),
 )]
 URL_PASSWORD = re.compile(r"\b[a-z][a-z0-9+.\-]*://[^\s:@/]+:([^\s@/]{6,})@[^\s/]+")
 ASSIGNED = re.compile(r"(?i)(?<![a-z0-9])(?:[a-z0-9]+[_-])*(pass(?:word|wd)?|secret|api[_-]?key|access[_-]?key|token|auth)"
                       r"(?:[_-][a-z0-9]+)*[\"']?\s*[:=]\s*[\"']([^\"'\s]{12,})[\"']")
+# camelCase and PascalCase names (clientSecret, DbPassword) need their own case-sensitive pattern.
+CAMEL = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(Password|Passwd|Secret|ApiKey|AccessKey|Token)[A-Za-z0-9]*"
+                   r"[\"']?\s*[:=]\s*[\"']([^\"'\s]{12,})[\"']")
+MARK = "secretscan:ignore"
 PLACEHOLDER = re.compile(r"(?i)example|sample|dummy|changeme|your[_-]|xxxx|<[^>]+>|\$\{|\{\{|process\.env|placeholder|\*{4}")
 SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "dist", "build", "__pycache__", ".next", "vendor"}
 MAX_FILE = 1_000_000
@@ -47,11 +52,11 @@ def entropy(s):
 
 def hits(line):
     """(type, value) pairs found in one line of text."""
-    if "secretscan:ignore" in line:
+    if MARK in line:
         return []
     out = [(name, m.group(0)) for name, rx in PATTERNS for m in rx.finditer(line)]
     out += [("Password in a URL", m.group(1)) for m in URL_PASSWORD.finditer(line) if not PLACEHOLDER.search(m.group(1))]
-    for m in ASSIGNED.finditer(line):
+    for m in list(ASSIGNED.finditer(line)) + list(CAMEL.finditer(line)):
         value = m.group(2)
         if not PLACEHOLDER.search(value) and entropy(value) >= 3.2 and not any(value in v for _, v in out):
             out.append((f"Hard-coded {m.group(1).lower()}", value))
@@ -65,7 +70,12 @@ def key(kind, value):
 def scan_history(path, found):
     commit = name = ""
     commits = lines = 0
-    with Path(path).open(encoding="utf-8", errors="replace") as fh:
+    with Path(path).open("rb") as fh:
+        start = fh.read(4096)
+    if start[:2] in (b"\xff\xfe", b"\xfe\xff") or b"\x00" in start:
+        fail(f"{path} is not UTF-8 text. A PowerShell `>` redirect writes UTF-16, which would hide every finding. "
+             "Create it with: git log -p --all --output=history.patch")
+    with Path(path).open(encoding="utf-8-sig", errors="replace") as fh:
         for raw in fh:
             if raw.startswith("commit ") and len(raw) > 14:
                 commit, commits = raw[7:19], commits + 1
@@ -81,38 +91,49 @@ def scan_history(path, found):
     return {"commits": commits, "added_lines": lines}
 
 
-def scan_tree(root, found):
-    root, files = Path(root), 0
+def scan_tree(root, found, ignored):
+    root, files, unreadable = Path(root), 0, 0
     if not root.is_dir():
         fail(f"not a folder: {root}")
     for p in sorted(root.rglob("*")):
-        if not p.is_file() or SKIP_DIRS & set(p.relative_to(root).parts) or p.stat().st_size > MAX_FILE:
+        try:
+            if not p.is_file() or SKIP_DIRS & set(p.relative_to(root).parts) or p.stat().st_size > MAX_FILE:
+                continue
+            data = p.read_bytes()
+        except OSError:  # locked or no permission: count it and keep scanning
+            unreadable += 1
             continue
-        data = p.read_bytes()
         if b"\x00" in data[:2048]:
             continue
         files += 1
         for n, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
+            if MARK in line:  # a confirmed false positive: the same value is dropped from the history findings too
+                ignored.update(key(kind, value) for kind, value in hits(line.replace(MARK, "")))
             for kind, value in hits(line):
                 f = found.setdefault(key(kind, value), {"type": kind, "value": value, "commit": "", "times_seen": 0})
                 f.update(in_working_tree=True, file=p.relative_to(root).as_posix(), line=n)
                 f["times_seen"] += 1
-    return {"files": files}
+    return {"files": files, "unreadable_files": unreadable}
 
 
 def main(argv):
     args = [a for a in argv if a != "--tree"]
     tree = argv[argv.index("--tree") + 1] if "--tree" in argv and argv.index("--tree") + 1 < len(argv) else None
+    if "--tree" in argv and tree is None:
+        fail("--tree needs a folder, for example: --tree .")
     history = next((a for a in args if a != tree), None)
     if not history and not tree:
         fail("usage: secretscan.py [history.patch] [--tree <folder>]")
     if history and not Path(history).is_file():
-        fail(f"no such file: {history}  (create it with: git log -p --all > history.patch)")
-    found, scanned = {}, {}
+        fail(f"no such file: {history}  (create it with: git log -p --all --output=history.patch)")
+    found, scanned, ignored = {}, {}, set()
     if history:
         scanned.update(scan_history(history, found))
     if tree:
-        scanned.update(scan_tree(tree, found))
+        scanned.update(scan_tree(tree, found, ignored))
+        scanned["values_marked_ignore"] = len(ignored)
+    for k in ignored:
+        found.pop(k, None)
     findings = sorted(found.values(), key=lambda f: (not f.get("in_working_tree"), f["type"], f.get("file", "")))
     by_type = {}
     for f in findings:
@@ -124,8 +145,10 @@ def main(argv):
     out = {"clean": not findings, "scanned": scanned, "found": len(findings), "by_type": by_type,
            "findings": findings[:200], "not_shown": max(0, len(findings) - 200)}
     if findings:
-        out["next"] = ["Rotate or revoke every key listed, starting now. A key that was ever pushed is leaked, "
-                       "whether or not it was deleted later.",
+        out["next"] = ["Rotate or revoke every key that has a commit id, starting now. A key that was ever pushed is "
+                       "leaked, whether or not it was deleted later. A finding with no commit id was not in an "
+                       "exported history: if you scanned the history too, git ignores that file and it was never "
+                       "committed, it has not leaked.",
                        "Remove values still in the working tree and load them from the environment or a secret store.",
                        "Rewriting history is optional and destructive: only with the owner's yes, and never "
                        "instead of rotating."]
@@ -136,4 +159,8 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as exc:  # an input nobody planned for: one JSON error line, never a traceback
+        print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), file=sys.stderr)
+        sys.exit(1)

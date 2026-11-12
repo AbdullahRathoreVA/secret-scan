@@ -17,7 +17,7 @@ for anyone who clones the repository.
 ## Use it
 
 ```bash
-git log -p --all > ../history.patch
+git log -p --all --output=../history.patch
 ```
 
 ```bash
@@ -25,7 +25,8 @@ python scripts/secretscan.py ../history.patch --tree .
 ```
 
 Write `history.patch` outside the repository so it is never committed, and
-delete it afterwards. For the current files only:
+delete it afterwards. Use `--output`, not `>`: a Windows PowerShell redirect
+saves UTF-16, which the scan refuses with an error. For the current files only:
 
 ```bash
 python scripts/secretscan.py --tree .
@@ -34,7 +35,9 @@ python scripts/secretscan.py --tree .
 Example result on a real repository (27 commits, 108 files):
 
 ```json
-{ "clean": false, "scanned": { "commits": 27, "added_lines": 16612, "files": 108 },
+{ "clean": false,
+  "scanned": { "commits": 27, "added_lines": 16612, "files": 108,
+               "unreadable_files": 0, "values_marked_ignore": 0 },
   "found": 1, "by_type": { "AI provider key": 1 },
   "findings": [ { "type": "AI provider key", "file": ".env", "commit": "",
                   "in_working_tree": true, "value": "gsk_... (56 chars)" } ] }
@@ -47,9 +50,11 @@ is where a key belongs.
 
 AWS access keys, GitHub tokens, Stripe live keys, Slack tokens, Google API
 keys, AI provider keys, private key blocks, JSON web tokens, passwords inside
-URLs, and hard-coded assignments such as `db_password = "..."`. Placeholders
-(`your_key_here`, `${VAR}`, `example`) are ignored. Add `secretscan:ignore` to
-a line to skip a confirmed false positive.
+URLs, and hard-coded assignments such as `db_password = "..."` or
+`clientSecret: "..."`. Placeholders (`your_key_here`, `${VAR}`, `example`) are
+ignored. Add `secretscan:ignore` to a line to skip a confirmed false positive:
+a scan of history and files then leaves that value out of the history findings
+too.
 
 It is a pattern scan: it cannot prove nothing was leaked, and a secret in an
 unusual format can be missed. Binary files and files over 1 MB are skipped.
