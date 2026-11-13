@@ -76,8 +76,14 @@ npx skills add AbdullahRathoreVA/secret-scan
 Or copy this folder into your agent's skills directory. Then ask: "Check this
 repo's history for leaked keys before I make it public."
 
-More skills from the same author, including the Aether Engine pack and Agent
-Team: <https://www.agensi.io/creators/abdullah-rathore>
+## More free skills
+
+| Skill | What it does |
+|---|---|
+| [Aether Engine](https://github.com/AbdullahRathoreVA/aether-engine-skill) | Finds people asking for what you sell, plans and publishes audited SEO pages, checks drafts for filler |
+| [Aether Listen](https://github.com/AbdullahRathoreVA/aether-listen) | Finds and ranks public posts from people who need your product |
+| [Agent Team](https://github.com/AbdullahRathoreVA/agent-team) | Plans a task for a team of AI agents and coordinates their handoffs through Git |
+| **Secret Scan** | This one |
 
 ## Licence
 

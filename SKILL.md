@@ -3,6 +3,7 @@ name: secret-scan
 description: Finds API keys, tokens, private keys and passwords that were ever committed to a Git repository, including ones deleted in a later commit, and reports which are still in the working tree. Use before making a repository public, before open-sourcing or sharing code, after a suspected leak, when the user asks whether they ever committed a key, or as a check before pushing. One standard-library Python script, local only; values are masked in the output.
 license: MIT
 metadata:
+  author: AbdullahRathoreVA
   version: "1.1.0"
 ---
 
